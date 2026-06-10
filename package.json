@@ -1,6 +1,6 @@
 {
   "name": "ha-chmu-meteogram-card",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Lovelace meteogram card for the ha-chmu-meteogram integration (ČHMÚ / ALADIN hourly forecast)",
   "license": "Apache-2.0",
   "repository": {

@@ -56,8 +56,8 @@ const hass = {
 };
 
 for (const [id, cfg] of [
-  ["card48", { hours: 48 }],
-  ["card12", { hours: 12, title: "Dnes (12 h)" }],
+  ["card48", { hours: 24 }],
+  ["card12", { hours: 12, title: "Dnes (12 h, bez posuvníku)", scrollbar: false }],
 ]) {
   const card = document.getElementById(id);
   card.setConfig({

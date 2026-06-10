@@ -49,10 +49,12 @@ interface HomeAssistant {
 interface CardConfig {
   type: string;
   entity: string;
-  /** Počet zobrazených hodin předpovědi (6–73). */
+  /** Počet hodin viditelných najednou (6–73). */
   hours?: number;
   title?: string;
   show_header?: boolean;
+  /** Posuvník: graf jde posouvat přes celou předpověď (výchozí true). */
+  scrollbar?: boolean;
 }
 
 const DEFAULT_HOURS = 48;
@@ -63,8 +65,7 @@ const MAX_HOURS = 73;
 const PLOT_HEIGHT = 240;
 const M_TOP = 26;
 const M_BOTTOM = 40;
-const M_LEFT = 40;
-const M_RIGHT = 40;
+const AXIS_W = 40;
 
 // ---------------------------------------------------------------------------
 // Pomocné funkce
@@ -232,7 +233,7 @@ export class ChmuMeteogramCard extends LitElement {
     let body: TemplateResult;
     if (this._error) {
       body = html`<div class="msg error">${this._error}</div>`;
-    } else if (!this._forecast || this._forecast.length < 2 || this._width < 50) {
+    } else if (!this._forecast || this._forecast.length < 2 || this._width < 100) {
       body = html`<div class="msg">Čekám na data předpovědi…</div>`;
     } else {
       body = this._renderChart();
@@ -249,23 +250,26 @@ export class ChmuMeteogramCard extends LitElement {
   }
 
   private _renderChart(): TemplateResult {
-    const all = this._forecast!;
-    const points = all.slice(0, this._hours).map((f) => ({
+    const scrollable = this._config!.scrollbar !== false;
+    let points = this._forecast!.map((f) => ({
       time: new Date(f.datetime),
       temp: f.temperature ?? null,
       precip: Math.max(0, f.precipitation ?? 0),
     }));
+    if (!scrollable) points = points.slice(0, this._hours);
 
-    const W = this._width;
-    const H = PLOT_HEIGHT;
-    const plotW = W - M_LEFT - M_RIGHT;
-    const plotH = H - M_TOP - M_BOTTOM;
     const n = points.length;
+    const visible = Math.min(this._hours, n);
+    const H = PLOT_HEIGHT;
+    const plotH = H - M_TOP - M_BOTTOM;
+    const viewW = Math.max(60, this._width - 2 * AXIS_W);
+    const stepPx = viewW / visible;
+    const pad = stepPx / 2;
+    const innerW = (n - 1) * stepPx + 2 * pad;
     const t0 = points[0].time.getTime();
-    const t1 = points[n - 1].time.getTime();
-    const x = (t: number) => M_LEFT + ((t - t0) / (t1 - t0)) * plotW;
+    const x = (t: number) => pad + ((t - t0) / 3_600_000) * stepPx;
 
-    // --- teplotní osa ---
+    // --- teplotní osa (škála přes celou předpověď, ať se při posunu nemění) ---
     const temps = points.map((p) => p.temp).filter((v): v is number => v != null);
     let tMin = Math.min(...temps);
     let tMax = Math.max(...temps);
@@ -287,46 +291,53 @@ export class ChmuMeteogramCard extends LitElement {
     const fmt = new Intl.NumberFormat(this._lang, { maximumFractionDigits: 0 });
     const fmtP = new Intl.NumberFormat(this._lang, { maximumFractionDigits: 1 });
     const dayFmt = new Intl.DateTimeFormat(this._lang, { weekday: "short" });
-    const tempUnit =
-      (this._hass?.states[this._config!.entity]?.attributes
-        .temperature_unit as string | undefined) ?? "°C";
-    const precipUnit =
-      (this._hass?.states[this._config!.entity]?.attributes
-        .precipitation_unit as string | undefined) ?? "mm";
+    const attrs = this._hass?.states[this._config!.entity]?.attributes;
+    const tempUnit = (attrs?.temperature_unit as string | undefined) ?? "°C";
+    const precipUnit = (attrs?.precipitation_unit as string | undefined) ?? "mm";
 
+    // --- pevná levá osa (teplota) ---
+    const leftParts: unknown[] = [
+      svg`<text x=${AXIS_W - 8} y=${M_TOP - 10} class="unit temp-lbl" text-anchor="end">${tempUnit}</text>`,
+      svg`<line x1=${AXIS_W - 0.5} x2=${AXIS_W - 0.5} y1=${M_TOP} y2=${M_TOP + plotH} class="axisline temp-axisline" />`,
+    ];
+    for (let v = tMin; v <= tMax + 1e-9; v += tStep) {
+      const y = yT(v);
+      leftParts.push(svg`
+        <line x1=${AXIS_W - 4} x2=${AXIS_W} y1=${y} y2=${y} class="axisline temp-axisline" />
+        <text x=${AXIS_W - 8} y=${y + 3.5} class="lbl temp-lbl" text-anchor="end">${fmt.format(v)}</text>
+      `);
+    }
+
+    // --- pevná pravá osa (srážky) ---
+    const rightParts: unknown[] = [
+      svg`<text x="8" y=${M_TOP - 10} class="unit precip-lbl" text-anchor="start">${precipUnit}</text>`,
+      svg`<line x1="0.5" x2="0.5" y1=${M_TOP} y2=${M_TOP + plotH} class="axisline precip-axisline" />`,
+    ];
+    for (let v = 0; v <= pMax + 1e-9; v += pStep) {
+      const y = yP(v);
+      rightParts.push(svg`
+        <line x1="0" x2="4" y1=${y} y2=${y} class="axisline precip-axisline" />
+        <text x="8" y=${y + 3.5} class="lbl precip-lbl" text-anchor="start">${fmtP.format(v)}</text>
+      `);
+    }
+
+    // --- posuvná část grafu ---
     const parts: unknown[] = [];
 
-    // vodorovná mřížka + popisky teploty (vlevo)
+    // vodorovná mřížka
     for (let v = tMin; v <= tMax + 1e-9; v += tStep) {
       const y = yT(v);
       const isZero = Math.abs(v) < 1e-9;
       parts.push(svg`
-        <line x1=${M_LEFT} x2=${M_LEFT + plotW} y1=${y} y2=${y}
-              class=${isZero ? "grid zero" : "grid"} />
-        <text x=${M_LEFT - 6} y=${y + 3.5} class="lbl temp-lbl" text-anchor="end">
-          ${fmt.format(v)}
-        </text>
+        <line x1="0" x2=${innerW} y1=${y} y2=${y} class=${isZero ? "grid zero" : "grid"} />
       `);
     }
-
-    // popisky srážek (vpravo)
-    for (let v = 0; v <= pMax + 1e-9; v += pStep) {
-      parts.push(svg`
-        <text x=${M_LEFT + plotW + 6} y=${yP(v) + 3.5}
-              class="lbl precip-lbl" text-anchor="start">
-          ${fmtP.format(v)}
-        </text>
-      `);
-    }
-
-    // jednotky nad osami
+    // spodní hrana
     parts.push(svg`
-      <text x=${M_LEFT - 6} y=${M_TOP - 10} class="unit temp-lbl" text-anchor="end">${tempUnit}</text>
-      <text x=${M_LEFT + plotW + 6} y=${M_TOP - 10} class="unit precip-lbl" text-anchor="start">${precipUnit}</text>
+      <line x1="0" x2=${innerW} y1=${M_TOP + plotH} y2=${M_TOP + plotH} class="grid" />
     `);
 
     // sloupce srážek
-    const stepPx = plotW / (n - 1);
     const barW = Math.max(1.5, stepPx * 0.66);
     for (const p of points) {
       if (p.precip < 0.05) continue;
@@ -339,18 +350,17 @@ export class ChmuMeteogramCard extends LitElement {
 
     // hranice dnů + popisky dnů a hodin
     for (const p of points) {
-      const local = p.time;
-      const hr = local.getHours();
-      const px = x(local.getTime());
+      const hr = p.time.getHours();
+      const px = x(p.time.getTime());
       if (hr === 0) {
         parts.push(svg`
           <line x1=${px} x2=${px} y1=${M_TOP} y2=${M_TOP + plotH} class="daysep" />
           <text x=${px + 4} y=${H - 6} class="lbl day-lbl" text-anchor="start">
-            ${dayFmt.format(local)}
+            ${dayFmt.format(p.time)}
           </text>
         `);
       }
-      if (hr % 6 === 0 && px >= M_LEFT - 1 && px <= M_LEFT + plotW + 1) {
+      if (hr % 6 === 0) {
         parts.push(svg`
           <text x=${px} y=${H - 24} class="lbl hour-lbl" text-anchor="middle">${hr}h</text>
         `);
@@ -365,28 +375,34 @@ export class ChmuMeteogramCard extends LitElement {
 
     // čára "teď"
     const now = Date.now();
-    if (now >= t0 && now <= t1) {
+    const tLast = points[n - 1].time.getTime();
+    if (now >= t0 && now <= tLast) {
       const px = x(now);
       parts.push(svg`
         <line x1=${px} x2=${px} y1=${M_TOP - 4} y2=${M_TOP + plotH} class="nowline" />
       `);
     }
 
-    // rám grafu
-    parts.push(svg`
-      <rect x=${M_LEFT} y=${M_TOP} width=${plotW} height=${plotH} class="frame" />
-    `);
-
     return html`
-      <svg
-        viewBox="0 0 ${W} ${H}"
-        width=${W}
-        height=${H}
-        role="img"
-        aria-label="Meteogram: teplota a srážky po hodinách"
-      >
-        ${parts}
-      </svg>
+      <div class="chart-row">
+        <svg width=${AXIS_W} height=${H} viewBox="0 0 ${AXIS_W} ${H}">
+          ${leftParts}
+        </svg>
+        <div class="scroll">
+          <svg
+            width=${innerW}
+            height=${H}
+            viewBox="0 0 ${innerW} ${H}"
+            role="img"
+            aria-label="Meteogram: teplota a srážky po hodinách"
+          >
+            ${parts}
+          </svg>
+        </div>
+        <svg width=${AXIS_W} height=${H} viewBox="0 0 ${AXIS_W} ${H}">
+          ${rightParts}
+        </svg>
+      </div>
     `;
   }
 
@@ -408,7 +424,7 @@ export class ChmuMeteogramCard extends LitElement {
         var(--ha-card-border-radius, 12px) 0 0;
     }
     .chart {
-      padding: 4px 0 2px;
+      padding: 4px 0 6px;
     }
     .msg {
       padding: 24px 16px;
@@ -419,6 +435,31 @@ export class ChmuMeteogramCard extends LitElement {
     }
     svg {
       display: block;
+    }
+    .chart-row {
+      display: flex;
+      align-items: flex-start;
+    }
+    .scroll {
+      flex: 1;
+      min-width: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      overscroll-behavior-x: contain;
+      scrollbar-width: thin;
+      scrollbar-color: var(--chmu-scrollbar-color, #5b6f9d)
+        var(--chmu-scrollbar-track-color, #e3e6ec);
+    }
+    .scroll::-webkit-scrollbar {
+      height: 8px;
+    }
+    .scroll::-webkit-scrollbar-track {
+      background: var(--chmu-scrollbar-track-color, #e3e6ec);
+      border-radius: 4px;
+    }
+    .scroll::-webkit-scrollbar-thumb {
+      background: var(--chmu-scrollbar-color, #5b6f9d);
+      border-radius: 4px;
     }
     .grid {
       stroke: var(--divider-color, #e0e0e0);
@@ -433,10 +474,14 @@ export class ChmuMeteogramCard extends LitElement {
       stroke-width: 1;
       opacity: 0.55;
     }
-    .frame {
-      fill: none;
-      stroke: var(--divider-color, #e0e0e0);
-      stroke-width: 1;
+    .axisline {
+      stroke-width: 1.5;
+    }
+    .temp-axisline {
+      stroke: var(--chmu-temp-color, #d32f2f);
+    }
+    .precip-axisline {
+      stroke: var(--chmu-precip-axis-color, #4fb3cf);
     }
     .bar {
       fill: var(--chmu-precip-color, #86bfe8);
@@ -466,7 +511,7 @@ export class ChmuMeteogramCard extends LitElement {
       fill: var(--chmu-temp-color, #d32f2f);
     }
     .precip-lbl {
-      fill: var(--chmu-precip-axis-color, #1976d2);
+      fill: var(--chmu-precip-axis-color, #4fb3cf);
     }
     .hour-lbl {
       fill: var(--secondary-text-color, #727272);
@@ -497,13 +542,15 @@ const EDITOR_SCHEMA: SchemaItem[] = [
   },
   { name: "title", selector: { text: {} } },
   { name: "show_header", selector: { boolean: {} } },
+  { name: "scrollbar", selector: { boolean: {} } },
 ];
 
 const EDITOR_LABELS: Record<string, string> = {
   entity: "Weather entita (ČHMÚ)",
-  hours: "Časový rozsah (hodin)",
+  hours: "Viditelný rozsah (hodin)",
   title: "Nadpis",
   show_header: "Zobrazit modrou hlavičku",
+  scrollbar: "Posuvník časové osy",
 };
 
 @customElement("chmu-meteogram-card-editor")
@@ -521,6 +568,7 @@ export class ChmuMeteogramCardEditor extends LitElement {
     const data = {
       hours: DEFAULT_HOURS,
       show_header: true,
+      scrollbar: true,
       ...this._config,
     };
     return html`

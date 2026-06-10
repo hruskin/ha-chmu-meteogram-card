@@ -13,7 +13,8 @@ která podporuje hodinovou předpověď (`weather/subscribe_forecast`).
 - 🕐 osa X po hodinách (`0h / 6h / 12h / 18h`), zkratky dnů na půlnočních
   zlomech (`st`, `čt`, …)
 - ⏱️ přerušovaná svislá čára „teď"
-- 🔧 nastavitelný časový rozsah 6–73 hodin
+- ↔️ posuvník — graf jde posouvat přes celou předpověď (jako v aplikaci ČHMÚ)
+- 🔧 nastavitelné viditelné okno 6–73 hodin
 - 🎨 modrá hlavička, barvy přizpůsobitelné přes CSS proměnné, GUI editor
 
 ## Instalace
@@ -43,23 +44,26 @@ entity: weather.chmu_praha_predpoved
 hours: 48
 ```
 
-| Volba         | Typ     | Výchozí                 | Popis                                  |
-| ------------- | ------- | ----------------------- | -------------------------------------- |
-| `entity`      | string  | **povinné**             | Weather entita s hodinovou předpovědí  |
-| `hours`       | number  | `48`                    | Časový rozsah grafu (6–73 hodin)       |
-| `title`       | string  | friendly name entity    | Text v hlavičce                        |
-| `show_header` | boolean | `true`                  | Zobrazit modrou hlavičku               |
+| Volba         | Typ     | Výchozí                 | Popis                                            |
+| ------------- | ------- | ----------------------- | ------------------------------------------------ |
+| `entity`      | string  | **povinné**             | Weather entita s hodinovou předpovědí            |
+| `hours`       | number  | `48`                    | Kolik hodin je vidět najednou (6–73)             |
+| `scrollbar`   | boolean | `true`                  | Posuvník — posun grafu přes celou předpověď; při `false` se zobrazí jen prvních `hours` hodin |
+| `title`       | string  | friendly name entity    | Text v hlavičce                                  |
+| `show_header` | boolean | `true`                  | Zobrazit modrou hlavičku                         |
 
 Kartu lze plně nastavit i v GUI editoru dashboardu.
 
 ### Barvy (volitelné, přes [card-mod](https://github.com/thomasloven/lovelace-card-mod) nebo theme)
 
-| CSS proměnná               | Výchozí   | Význam                  |
-| -------------------------- | --------- | ----------------------- |
-| `--chmu-header-color`      | `#2167ae` | pozadí hlavičky         |
-| `--chmu-temp-color`        | `#d32f2f` | teplotní křivka + osa   |
-| `--chmu-precip-color`      | `#86bfe8` | sloupce srážek          |
-| `--chmu-precip-axis-color` | `#1976d2` | popisky srážkové osy    |
+| CSS proměnná                  | Výchozí   | Význam                  |
+| ----------------------------- | --------- | ----------------------- |
+| `--chmu-header-color`         | `#2167ae` | pozadí hlavičky         |
+| `--chmu-temp-color`           | `#d32f2f` | teplotní křivka + osa   |
+| `--chmu-precip-color`         | `#86bfe8` | sloupce srážek          |
+| `--chmu-precip-axis-color`    | `#4fb3cf` | srážková osa + popisky  |
+| `--chmu-scrollbar-color`      | `#5b6f9d` | jezdec posuvníku        |
+| `--chmu-scrollbar-track-color`| `#e3e6ec` | dráha posuvníku         |
 
 ## Vývoj
 
