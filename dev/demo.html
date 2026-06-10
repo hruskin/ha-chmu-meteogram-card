@@ -17,6 +17,26 @@
 <script type="module">
 import "../dist/chmu-meteogram-card.js";
 
+// Stub ha-icon (v HA ho dodává frontend) — pro demo emoji náhrada
+if (!customElements.get("ha-icon")) {
+  customElements.define("ha-icon", class extends HTMLElement {
+    static get observedAttributes() { return ["icon"]; }
+    attributeChangedCallback() { this._render(); }
+    connectedCallback() { this._render(); }
+    _render() {
+      const map = {
+        "mdi:weather-sunny": "☀️", "mdi:weather-night": "🌙",
+        "mdi:weather-partly-cloudy": "⛅", "mdi:weather-cloudy": "☁️",
+        "mdi:weather-rainy": "🌧️", "mdi:weather-pouring": "🌧️",
+        "mdi:weather-snowy": "🌨️", "mdi:weather-windy": "💨",
+        "mdi:water": "💧", "mdi:arrow-up": "↑",
+        "mdi:gauge": "◔", "mdi:water-percent": "💦",
+      };
+      this.textContent = map[this.getAttribute("icon")] ?? "·";
+    }
+  });
+}
+
 // Mock: 73 hodinových bodů à la ČHMÚ ALADIN
 const start = new Date();
 start.setMinutes(0, 0, 0);
@@ -29,10 +49,23 @@ for (let i = 0; i < 73; i++) {
   let precip = 0;
   if (i > 18 && i < 26) precip = Math.max(0, 2.2 * Math.sin(((i - 18) / 8) * Math.PI));
   if (i > 50 && i < 55) precip = 0.4;
+  const clouds = 50 + 45 * Math.sin(i / 7);
+  const condition =
+    precip >= 2 ? "pouring" :
+    precip >= 0.1 ? "rainy" :
+    clouds >= 80 ? "cloudy" :
+    clouds >= 30 ? "partlycloudy" :
+    h >= 6 && h <= 20 ? "sunny" : "clear-night";
   forecast.push({
     datetime: t.toISOString(),
+    condition,
     temperature: Math.round(temp * 10) / 10,
     precipitation: Math.round(precip * 10) / 10,
+    wind_speed: Math.round((2 + 2 * Math.sin(i / 5)) * 10) / 10,
+    wind_gust_speed: Math.round((3.5 + 2.5 * Math.sin(i / 5)) * 10) / 10,
+    wind_bearing: (i * 17) % 360,
+    pressure: Math.round((1018 + 3 * Math.sin(i / 13)) * 10) / 10,
+    humidity: Math.round(75 + 20 * Math.sin(i / 9)),
   });
 }
 
@@ -44,6 +77,8 @@ const hass = {
         friendly_name: "ČHMÚ Praha-Libuš — předpověď",
         temperature_unit: "°C",
         precipitation_unit: "mm",
+        wind_speed_unit: "m/s",
+        pressure_unit: "hPa",
       },
     },
   },
@@ -56,8 +91,8 @@ const hass = {
 };
 
 for (const [id, cfg] of [
-  ["card48", { hours: 24 }],
-  ["card12", { hours: 12, title: "Dnes (12 h, bez posuvníku)", scrollbar: false }],
+  ["card48", { hours: 48 }],
+  ["card12", { hours: 12, title: "Dnes (12 h)" }],
 ]) {
   const card = document.getElementById(id);
   card.setConfig({
