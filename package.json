@@ -1,0 +1,22 @@
+{
+  "name": "ha-chmu-meteogram-card",
+  "version": "0.1.0",
+  "description": "Lovelace meteogram card for the ha-chmu-meteogram integration (ČHMÚ / ALADIN hourly forecast)",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hruskin/ha-chmu-meteogram-card"
+  },
+  "scripts": {
+    "build": "esbuild src/chmu-meteogram-card.ts --bundle --minify --format=esm --outfile=dist/chmu-meteogram-card.js",
+    "watch": "esbuild src/chmu-meteogram-card.ts --bundle --format=esm --outfile=dist/chmu-meteogram-card.js --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "lit": "^3.2.0"
+  }
+}
