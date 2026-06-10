@@ -1,0 +1,6 @@
+{
+  "name": "ČHMÚ Meteogram Card",
+  "render_readme": true,
+  "filename": "chmu-meteogram-card.js",
+  "homeassistant": "2024.10.0"
+}
