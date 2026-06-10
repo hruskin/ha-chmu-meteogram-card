@@ -38,7 +38,7 @@ interface HassEntity {
 interface HomeAssistant {
   states: Record<string, HassEntity | undefined>;
   language?: string;
-  locale?: { language?: string };
+  locale?: { language?: string; time_format?: string };
   connection: {
     subscribeMessage<T>(
       callback: (msg: T) => void,
@@ -129,7 +129,7 @@ export class ChmuMeteogramCard extends LitElement {
   @state() private _forecast?: ForecastItem[];
   @state() private _width = 0;
   @state() private _error?: string;
-  /** Index hodiny vybrané kurzorem; undefined = aktuální hodina. */
+  /** Index hodiny vybrané kurzorem; undefined = kurzor skrytý. */
   @state() private _selIdx?: number;
 
   private _hass?: HomeAssistant;
@@ -176,6 +176,16 @@ export class ChmuMeteogramCard extends LitElement {
     return 5;
   }
 
+  /** Rozměry v sections view (HA 2026.6+); buňka ~30×56 px + 8 px mezera. */
+  getGridOptions(): Record<string, number | string> {
+    return {
+      columns: 12,
+      rows: 5,
+      min_columns: 6,
+      min_rows: 4,
+    };
+  }
+
   private get _hours(): number {
     const h = this._config?.hours ?? DEFAULT_HOURS;
     return Math.min(MAX_HOURS, Math.max(MIN_HOURS, Math.round(h)));
@@ -183,6 +193,19 @@ export class ChmuMeteogramCard extends LitElement {
 
   private get _lang(): string {
     return this._hass?.locale?.language ?? this._hass?.language ?? "cs";
+  }
+
+  /** 12h vs 24h podle nastavení HA (Nastavení → Osoba → Formát času). */
+  private get _use12h(): boolean {
+    const tf = this._hass?.locale?.time_format;
+    if (tf === "12") return true;
+    if (tf === "24") return false;
+    // "language" → podle jazyka HA, "system" → podle prohlížeče
+    const locale = tf === "system" ? undefined : this._lang;
+    return (
+      new Intl.DateTimeFormat(locale, { hour: "numeric" }).resolvedOptions()
+        .hour12 ?? false
+    );
   }
 
   // ---- lifecycle / subscription ------------------------------------------
@@ -253,21 +276,6 @@ export class ChmuMeteogramCard extends LitElement {
     }));
   }
 
-  /** Index bodu nejbližšího aktuálnímu času. */
-  private _nowIdx(points: Array<{ time: Date }>): number {
-    const now = Date.now();
-    let best = 0;
-    for (let i = 0; i < points.length; i++) {
-      if (
-        Math.abs(points[i].time.getTime() - now) <
-        Math.abs(points[best].time.getTime() - now)
-      ) {
-        best = i;
-      }
-    }
-    return best;
-  }
-
   private _idxFromEvent(ev: PointerEvent): number | undefined {
     const svgEl = this.renderRoot.querySelector("svg");
     const n = Math.min(this._forecast?.length ?? 0, this._hours);
@@ -294,6 +302,12 @@ export class ChmuMeteogramCard extends LitElement {
   private _onPointerUp(ev: PointerEvent): void {
     this._dragging = false;
     (ev.currentTarget as Element).releasePointerCapture(ev.pointerId);
+    // Dotyk: po zvednutí prstu už nad grafem nic není → kurzor schovat
+    if (ev.pointerType !== "mouse") this._selIdx = undefined;
+  }
+
+  private _onPointerLeave(): void {
+    if (!this._dragging) this._selIdx = undefined;
   }
 
   // ---- render --------------------------------------------------------------
@@ -303,7 +317,7 @@ export class ChmuMeteogramCard extends LitElement {
 
     const title =
       this._config.title ??
-      (this._hass?.states[this._config.entity]?.attributes
+      (this._hass?.states?.[this._config.entity]?.attributes
         .friendly_name as string | undefined) ??
       "Meteogram ČHMÚ";
 
@@ -360,7 +374,7 @@ export class ChmuMeteogramCard extends LitElement {
     const fmt = new Intl.NumberFormat(this._lang, { maximumFractionDigits: 0 });
     const fmtP = new Intl.NumberFormat(this._lang, { maximumFractionDigits: 1 });
     const dayFmt = new Intl.DateTimeFormat(this._lang, { weekday: "short" });
-    const attrs = this._hass?.states[this._config!.entity]?.attributes;
+    const attrs = this._hass?.states?.[this._config!.entity]?.attributes;
     const tempUnit = (attrs?.temperature_unit as string | undefined) ?? "°C";
     const precipUnit = (attrs?.precipitation_unit as string | undefined) ?? "mm";
 
@@ -425,8 +439,14 @@ export class ChmuMeteogramCard extends LitElement {
         `);
       }
       if (hr % 6 === 0 && px >= M_LEFT - 1 && px <= M_LEFT + plotW + 1) {
+        const lbl = this._use12h
+          ? p.time
+              .toLocaleTimeString(this._lang, { hour: "numeric", hour12: true })
+              .toLowerCase()
+              .replace(/\s/g, "")
+          : `${hr}h`;
         parts.push(svg`
-          <text x=${px} y=${H - 24} class="lbl hour-lbl" text-anchor="middle">${hr}h</text>
+          <text x=${px} y=${H - 24} class="lbl hour-lbl" text-anchor="middle">${lbl}</text>
         `);
       }
     }
@@ -446,14 +466,17 @@ export class ChmuMeteogramCard extends LitElement {
       `);
     }
 
-    // kurzor vybrané hodiny
-    const selIdx = Math.min(this._selIdx ?? this._nowIdx(points), n - 1);
-    const sel = points[selIdx];
-    const selX = x(sel.time.getTime());
-    parts.push(svg`
-      <line x1=${selX} x2=${selX} y1=${M_TOP - 4} y2=${M_TOP + plotH} class="cursorline" />
-      ${sel.temp != null ? svg`<circle cx=${selX} cy=${yT(sel.temp)} r="4" class="cursordot" />` : nothing}
-    `);
+    // kurzor vybrané hodiny — jen pokud je myš/prst nad grafem
+    const sel =
+      this._selIdx !== undefined ? points[Math.min(this._selIdx, n - 1)] : undefined;
+    let selX = 0;
+    if (sel) {
+      selX = x(sel.time.getTime());
+      parts.push(svg`
+        <line x1=${selX} x2=${selX} y1=${M_TOP - 4} y2=${M_TOP + plotH} class="cursorline" />
+        ${sel.temp != null ? svg`<circle cx=${selX} cy=${yT(sel.temp)} r="4" class="cursordot" />` : nothing}
+      `);
+    }
 
     return html`
       <div class="chart-wrap">
@@ -467,10 +490,11 @@ export class ChmuMeteogramCard extends LitElement {
           @pointermove=${this._onPointerMove}
           @pointerup=${this._onPointerUp}
           @pointercancel=${this._onPointerUp}
+          @pointerleave=${this._onPointerLeave}
         >
           ${parts}
         </svg>
-        ${this._renderBubble(sel.raw, sel.time, selX, W)}
+        ${sel ? this._renderBubble(sel.raw, sel.time, selX, W) : nothing}
       </div>
     `;
   }
@@ -482,7 +506,7 @@ export class ChmuMeteogramCard extends LitElement {
     W: number
   ): TemplateResult {
     const lang = this._lang;
-    const attrs = this._hass?.states[this._config!.entity]?.attributes;
+    const attrs = this._hass?.states?.[this._config!.entity]?.attributes;
     const tempUnit = (attrs?.temperature_unit as string | undefined) ?? "°C";
     const precipUnit = (attrs?.precipitation_unit as string | undefined) ?? "mm";
     const windUnit = (attrs?.wind_speed_unit as string | undefined) ?? "m/s";
@@ -500,7 +524,11 @@ export class ChmuMeteogramCard extends LitElement {
         year: "numeric",
       }) +
       " " +
-      time.toLocaleTimeString(lang, { hour: "numeric", minute: "2-digit" });
+      time.toLocaleTimeString(lang, {
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: this._use12h,
+      });
 
     const icon = CONDITION_ICONS[f.condition ?? ""] ?? "mdi:weather-partly-cloudy";
 
@@ -814,4 +842,12 @@ window.customCards.push({
     "Hodinový meteogram (teplota + srážky) z integrace ha-chmu-meteogram.",
   preview: true,
   documentationURL: "https://github.com/hruskin/ha-chmu-meteogram-card",
+  // HA 2026.6+: nabídnout kartu při výběru weather entity v card pickeru
+  getEntitySuggestion: (_hass: HomeAssistant, entityId: string) => {
+    if (!entityId.startsWith("weather.")) return null;
+    return {
+      config: { type: "custom:chmu-meteogram-card", entity: entityId },
+      label: "Meteogram",
+    };
+  },
 });

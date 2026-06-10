@@ -17,7 +17,8 @@ která podporuje hodinovou předpověď (`weather/subscribe_forecast`).
 - ⏱️ přerušovaná svislá čára „teď"
 - 👆 interaktivní kurzor — najetím myší / tažením prstem se zobrazí bublina
   s detaily vybrané hodiny (piktogram počasí, teplota, srážky, vítr + nárazy,
-  tlak, vlhkost), jako v aplikaci ČHMÚ
+  tlak, vlhkost), jako v aplikaci ČHMÚ; mimo graf se schová
+- 🕓 časové údaje respektují jazyk i formát času (12/24 h) z nastavení HA
 - 🔧 nastavitelný časový rozsah 6–73 hodin
 - 🎨 modrá hlavička, barvy přizpůsobitelné přes CSS proměnné, GUI editor
 
