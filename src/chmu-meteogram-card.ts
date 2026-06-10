@@ -7,6 +7,7 @@
  */
 import { css, html, LitElement, nothing, svg, type TemplateResult } from "lit";
 import { customElement, state } from "lit/decorators.js";
+import { styleMap } from "lit/directives/style-map.js";
 
 // ---------------------------------------------------------------------------
 // Typy
@@ -49,12 +50,10 @@ interface HomeAssistant {
 interface CardConfig {
   type: string;
   entity: string;
-  /** Počet hodin viditelných najednou (6–73). */
+  /** Počet zobrazených hodin předpovědi (6–73). */
   hours?: number;
   title?: string;
   show_header?: boolean;
-  /** Posuvník: graf jde posouvat přes celou předpověď (výchozí true). */
-  scrollbar?: boolean;
 }
 
 const DEFAULT_HOURS = 48;
@@ -65,7 +64,27 @@ const MAX_HOURS = 73;
 const PLOT_HEIGHT = 240;
 const M_TOP = 26;
 const M_BOTTOM = 40;
-const AXIS_W = 40;
+const M_LEFT = 40;
+const M_RIGHT = 40;
+const BUBBLE_W = 190;
+
+const CONDITION_ICONS: Record<string, string> = {
+  "clear-night": "mdi:weather-night",
+  cloudy: "mdi:weather-cloudy",
+  exceptional: "mdi:alert-circle-outline",
+  fog: "mdi:weather-fog",
+  hail: "mdi:weather-hail",
+  lightning: "mdi:weather-lightning",
+  "lightning-rainy": "mdi:weather-lightning-rainy",
+  partlycloudy: "mdi:weather-partly-cloudy",
+  pouring: "mdi:weather-pouring",
+  rainy: "mdi:weather-rainy",
+  snowy: "mdi:weather-snowy",
+  "snowy-rainy": "mdi:weather-snowy-rainy",
+  sunny: "mdi:weather-sunny",
+  windy: "mdi:weather-windy",
+  "windy-variant": "mdi:weather-windy-variant",
+};
 
 // ---------------------------------------------------------------------------
 // Pomocné funkce
@@ -110,12 +129,15 @@ export class ChmuMeteogramCard extends LitElement {
   @state() private _forecast?: ForecastItem[];
   @state() private _width = 0;
   @state() private _error?: string;
+  /** Index hodiny vybrané kurzorem; undefined = aktuální hodina. */
+  @state() private _selIdx?: number;
 
   private _hass?: HomeAssistant;
   private _unsub?: Promise<() => Promise<void>>;
   private _subscribedEntity?: string;
   private _resizeObserver?: ResizeObserver;
   private _nowTimer?: number;
+  private _dragging = false;
 
   // ---- konfigurace -------------------------------------------------------
 
@@ -140,6 +162,7 @@ export class ChmuMeteogramCard extends LitElement {
     if (this._subscribedEntity && this._subscribedEntity !== config.entity) {
       this._unsubscribe();
       this._forecast = undefined;
+      this._selIdx = undefined;
     }
     this._subscribe();
   }
@@ -219,6 +242,60 @@ export class ChmuMeteogramCard extends LitElement {
     }
   }
 
+  // ---- kurzor --------------------------------------------------------------
+
+  private _points() {
+    return (this._forecast ?? []).slice(0, this._hours).map((f) => ({
+      raw: f,
+      time: new Date(f.datetime),
+      temp: f.temperature ?? null,
+      precip: Math.max(0, f.precipitation ?? 0),
+    }));
+  }
+
+  /** Index bodu nejbližšího aktuálnímu času. */
+  private _nowIdx(points: Array<{ time: Date }>): number {
+    const now = Date.now();
+    let best = 0;
+    for (let i = 0; i < points.length; i++) {
+      if (
+        Math.abs(points[i].time.getTime() - now) <
+        Math.abs(points[best].time.getTime() - now)
+      ) {
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  private _idxFromEvent(ev: PointerEvent): number | undefined {
+    const svgEl = this.renderRoot.querySelector("svg");
+    const n = Math.min(this._forecast?.length ?? 0, this._hours);
+    if (!svgEl || n < 2) return undefined;
+    const rect = svgEl.getBoundingClientRect();
+    const plotW = rect.width - M_LEFT - M_RIGHT;
+    const rel = (ev.clientX - rect.left - M_LEFT) / plotW;
+    return Math.min(n - 1, Math.max(0, Math.round(rel * (n - 1))));
+  }
+
+  private _onPointerDown(ev: PointerEvent): void {
+    this._dragging = true;
+    (ev.currentTarget as Element).setPointerCapture(ev.pointerId);
+    const idx = this._idxFromEvent(ev);
+    if (idx !== undefined) this._selIdx = idx;
+  }
+
+  private _onPointerMove(ev: PointerEvent): void {
+    if (ev.pointerType !== "mouse" && !this._dragging) return;
+    const idx = this._idxFromEvent(ev);
+    if (idx !== undefined) this._selIdx = idx;
+  }
+
+  private _onPointerUp(ev: PointerEvent): void {
+    this._dragging = false;
+    (ev.currentTarget as Element).releasePointerCapture(ev.pointerId);
+  }
+
   // ---- render --------------------------------------------------------------
 
   render(): TemplateResult | typeof nothing {
@@ -250,26 +327,18 @@ export class ChmuMeteogramCard extends LitElement {
   }
 
   private _renderChart(): TemplateResult {
-    const scrollable = this._config!.scrollbar !== false;
-    let points = this._forecast!.map((f) => ({
-      time: new Date(f.datetime),
-      temp: f.temperature ?? null,
-      precip: Math.max(0, f.precipitation ?? 0),
-    }));
-    if (!scrollable) points = points.slice(0, this._hours);
-
+    const points = this._points();
     const n = points.length;
-    const visible = Math.min(this._hours, n);
-    const H = PLOT_HEIGHT;
-    const plotH = H - M_TOP - M_BOTTOM;
-    const viewW = Math.max(60, this._width - 2 * AXIS_W);
-    const stepPx = viewW / visible;
-    const pad = stepPx / 2;
-    const innerW = (n - 1) * stepPx + 2 * pad;
-    const t0 = points[0].time.getTime();
-    const x = (t: number) => pad + ((t - t0) / 3_600_000) * stepPx;
 
-    // --- teplotní osa (škála přes celou předpověď, ať se při posunu nemění) ---
+    const W = this._width;
+    const H = PLOT_HEIGHT;
+    const plotW = W - M_LEFT - M_RIGHT;
+    const plotH = H - M_TOP - M_BOTTOM;
+    const t0 = points[0].time.getTime();
+    const t1 = points[n - 1].time.getTime();
+    const x = (t: number) => M_LEFT + ((t - t0) / (t1 - t0)) * plotW;
+
+    // --- teplotní osa ---
     const temps = points.map((p) => p.temp).filter((v): v is number => v != null);
     let tMin = Math.min(...temps);
     let tMax = Math.max(...temps);
@@ -295,49 +364,44 @@ export class ChmuMeteogramCard extends LitElement {
     const tempUnit = (attrs?.temperature_unit as string | undefined) ?? "°C";
     const precipUnit = (attrs?.precipitation_unit as string | undefined) ?? "mm";
 
-    // --- pevná levá osa (teplota) ---
-    const leftParts: unknown[] = [
-      svg`<text x=${AXIS_W - 8} y=${M_TOP - 10} class="unit temp-lbl" text-anchor="end">${tempUnit}</text>`,
-      svg`<line x1=${AXIS_W - 0.5} x2=${AXIS_W - 0.5} y1=${M_TOP} y2=${M_TOP + plotH} class="axisline temp-axisline" />`,
-    ];
-    for (let v = tMin; v <= tMax + 1e-9; v += tStep) {
-      const y = yT(v);
-      leftParts.push(svg`
-        <line x1=${AXIS_W - 4} x2=${AXIS_W} y1=${y} y2=${y} class="axisline temp-axisline" />
-        <text x=${AXIS_W - 8} y=${y + 3.5} class="lbl temp-lbl" text-anchor="end">${fmt.format(v)}</text>
-      `);
-    }
-
-    // --- pevná pravá osa (srážky) ---
-    const rightParts: unknown[] = [
-      svg`<text x="8" y=${M_TOP - 10} class="unit precip-lbl" text-anchor="start">${precipUnit}</text>`,
-      svg`<line x1="0.5" x2="0.5" y1=${M_TOP} y2=${M_TOP + plotH} class="axisline precip-axisline" />`,
-    ];
-    for (let v = 0; v <= pMax + 1e-9; v += pStep) {
-      const y = yP(v);
-      rightParts.push(svg`
-        <line x1="0" x2="4" y1=${y} y2=${y} class="axisline precip-axisline" />
-        <text x="8" y=${y + 3.5} class="lbl precip-lbl" text-anchor="start">${fmtP.format(v)}</text>
-      `);
-    }
-
-    // --- posuvná část grafu ---
     const parts: unknown[] = [];
 
-    // vodorovná mřížka
+    // vodorovná mřížka + popisky teploty (vlevo)
     for (let v = tMin; v <= tMax + 1e-9; v += tStep) {
       const y = yT(v);
       const isZero = Math.abs(v) < 1e-9;
       parts.push(svg`
-        <line x1="0" x2=${innerW} y1=${y} y2=${y} class=${isZero ? "grid zero" : "grid"} />
+        <line x1=${M_LEFT} x2=${M_LEFT + plotW} y1=${y} y2=${y}
+              class=${isZero ? "grid zero" : "grid"} />
+        <line x1=${M_LEFT - 4} x2=${M_LEFT} y1=${y} y2=${y} class="axisline temp-axisline" />
+        <text x=${M_LEFT - 8} y=${y + 3.5} class="lbl temp-lbl" text-anchor="end">
+          ${fmt.format(v)}
+        </text>
       `);
     }
-    // spodní hrana
+
+    // popisky srážek (vpravo)
+    for (let v = 0; v <= pMax + 1e-9; v += pStep) {
+      const y = yP(v);
+      parts.push(svg`
+        <line x1=${M_LEFT + plotW} x2=${M_LEFT + plotW + 4} y1=${y} y2=${y} class="axisline precip-axisline" />
+        <text x=${M_LEFT + plotW + 8} y=${y + 3.5}
+              class="lbl precip-lbl" text-anchor="start">
+          ${fmtP.format(v)}
+        </text>
+      `);
+    }
+
+    // svislé osy + jednotky
     parts.push(svg`
-      <line x1="0" x2=${innerW} y1=${M_TOP + plotH} y2=${M_TOP + plotH} class="grid" />
+      <line x1=${M_LEFT} x2=${M_LEFT} y1=${M_TOP} y2=${M_TOP + plotH} class="axisline temp-axisline" />
+      <line x1=${M_LEFT + plotW} x2=${M_LEFT + plotW} y1=${M_TOP} y2=${M_TOP + plotH} class="axisline precip-axisline" />
+      <text x=${M_LEFT - 8} y=${M_TOP - 10} class="unit temp-lbl" text-anchor="end">${tempUnit}</text>
+      <text x=${M_LEFT + plotW + 8} y=${M_TOP - 10} class="unit precip-lbl" text-anchor="start">${precipUnit}</text>
     `);
 
     // sloupce srážek
+    const stepPx = plotW / (n - 1);
     const barW = Math.max(1.5, stepPx * 0.66);
     for (const p of points) {
       if (p.precip < 0.05) continue;
@@ -360,7 +424,7 @@ export class ChmuMeteogramCard extends LitElement {
           </text>
         `);
       }
-      if (hr % 6 === 0) {
+      if (hr % 6 === 0 && px >= M_LEFT - 1 && px <= M_LEFT + plotW + 1) {
         parts.push(svg`
           <text x=${px} y=${H - 24} class="lbl hour-lbl" text-anchor="middle">${hr}h</text>
         `);
@@ -375,33 +439,128 @@ export class ChmuMeteogramCard extends LitElement {
 
     // čára "teď"
     const now = Date.now();
-    const tLast = points[n - 1].time.getTime();
-    if (now >= t0 && now <= tLast) {
+    if (now >= t0 && now <= t1) {
       const px = x(now);
       parts.push(svg`
         <line x1=${px} x2=${px} y1=${M_TOP - 4} y2=${M_TOP + plotH} class="nowline" />
       `);
     }
 
+    // kurzor vybrané hodiny
+    const selIdx = Math.min(this._selIdx ?? this._nowIdx(points), n - 1);
+    const sel = points[selIdx];
+    const selX = x(sel.time.getTime());
+    parts.push(svg`
+      <line x1=${selX} x2=${selX} y1=${M_TOP - 4} y2=${M_TOP + plotH} class="cursorline" />
+      ${sel.temp != null ? svg`<circle cx=${selX} cy=${yT(sel.temp)} r="4" class="cursordot" />` : nothing}
+    `);
+
     return html`
-      <div class="chart-row">
-        <svg width=${AXIS_W} height=${H} viewBox="0 0 ${AXIS_W} ${H}">
-          ${leftParts}
+      <div class="chart-wrap">
+        <svg
+          viewBox="0 0 ${W} ${H}"
+          width=${W}
+          height=${H}
+          role="img"
+          aria-label="Meteogram: teplota a srážky po hodinách"
+          @pointerdown=${this._onPointerDown}
+          @pointermove=${this._onPointerMove}
+          @pointerup=${this._onPointerUp}
+          @pointercancel=${this._onPointerUp}
+        >
+          ${parts}
         </svg>
-        <div class="scroll">
-          <svg
-            width=${innerW}
-            height=${H}
-            viewBox="0 0 ${innerW} ${H}"
-            role="img"
-            aria-label="Meteogram: teplota a srážky po hodinách"
-          >
-            ${parts}
-          </svg>
+        ${this._renderBubble(sel.raw, sel.time, selX, W)}
+      </div>
+    `;
+  }
+
+  private _renderBubble(
+    f: ForecastItem,
+    time: Date,
+    selX: number,
+    W: number
+  ): TemplateResult {
+    const lang = this._lang;
+    const attrs = this._hass?.states[this._config!.entity]?.attributes;
+    const tempUnit = (attrs?.temperature_unit as string | undefined) ?? "°C";
+    const precipUnit = (attrs?.precipitation_unit as string | undefined) ?? "mm";
+    const windUnit = (attrs?.wind_speed_unit as string | undefined) ?? "m/s";
+    const pressureUnit = (attrs?.pressure_unit as string | undefined) ?? "hPa";
+
+    const fmt1 = new Intl.NumberFormat(lang, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    });
+    const fmt0 = new Intl.NumberFormat(lang, { maximumFractionDigits: 0 });
+    const when =
+      time.toLocaleDateString(lang, {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      }) +
+      " " +
+      time.toLocaleTimeString(lang, { hour: "numeric", minute: "2-digit" });
+
+    const icon = CONDITION_ICONS[f.condition ?? ""] ?? "mdi:weather-partly-cloudy";
+
+    // Bublina se překlápí na druhou stranu čáry u okrajů
+    const left =
+      selX <= W / 2
+        ? Math.min(selX + 10, W - BUBBLE_W - 4)
+        : Math.max(selX - BUBBLE_W - 10, 4);
+
+    const wind =
+      f.wind_speed != null
+        ? `${fmt1.format(f.wind_speed)}${
+            f.wind_gust_speed != null
+              ? ` (${fmt1.format(f.wind_gust_speed)})`
+              : ""
+          } ${windUnit}`
+        : null;
+
+    return html`
+      <div class="bubble" style=${styleMap({ left: `${left}px` })}>
+        <div class="b-when">${when}</div>
+        <div class="b-main">
+          <ha-icon class="b-cond" icon=${icon}></ha-icon>
+          <span class="b-temp">
+            ${f.temperature != null ? fmt1.format(f.temperature) : "–"}<span
+              class="b-temp-unit"
+              >${tempUnit}</span
+            >
+          </span>
         </div>
-        <svg width=${AXIS_W} height=${H} viewBox="0 0 ${AXIS_W} ${H}">
-          ${rightParts}
-        </svg>
+        <div class="b-grid">
+          <span class="b-item">
+            <ha-icon icon="mdi:water"></ha-icon>
+            ${fmt1.format(f.precipitation ?? 0)} ${precipUnit}
+          </span>
+          ${wind
+            ? html`<span class="b-item">
+                <ha-icon
+                  icon="mdi:arrow-up"
+                  class="b-wind"
+                  style=${styleMap({
+                    transform: `rotate(${((f.wind_bearing ?? 0) + 180) % 360}deg)`,
+                  })}
+                ></ha-icon>
+                ${wind}
+              </span>`
+            : nothing}
+          ${f.pressure != null
+            ? html`<span class="b-item">
+                <ha-icon icon="mdi:gauge"></ha-icon>
+                ${fmt1.format(f.pressure)} ${pressureUnit}
+              </span>`
+            : nothing}
+          ${f.humidity != null
+            ? html`<span class="b-item">
+                <ha-icon icon="mdi:water-percent"></ha-icon>
+                ${fmt0.format(f.humidity)} %
+              </span>`
+            : nothing}
+        </div>
       </div>
     `;
   }
@@ -426,6 +585,9 @@ export class ChmuMeteogramCard extends LitElement {
     .chart {
       padding: 4px 0 6px;
     }
+    .chart-wrap {
+      position: relative;
+    }
     .msg {
       padding: 24px 16px;
       color: var(--secondary-text-color);
@@ -435,31 +597,8 @@ export class ChmuMeteogramCard extends LitElement {
     }
     svg {
       display: block;
-    }
-    .chart-row {
-      display: flex;
-      align-items: flex-start;
-    }
-    .scroll {
-      flex: 1;
-      min-width: 0;
-      overflow-x: auto;
-      overflow-y: hidden;
-      overscroll-behavior-x: contain;
-      scrollbar-width: thin;
-      scrollbar-color: var(--chmu-scrollbar-color, #5b6f9d)
-        var(--chmu-scrollbar-track-color, #e3e6ec);
-    }
-    .scroll::-webkit-scrollbar {
-      height: 8px;
-    }
-    .scroll::-webkit-scrollbar-track {
-      background: var(--chmu-scrollbar-track-color, #e3e6ec);
-      border-radius: 4px;
-    }
-    .scroll::-webkit-scrollbar-thumb {
-      background: var(--chmu-scrollbar-color, #5b6f9d);
-      border-radius: 4px;
+      cursor: crosshair;
+      touch-action: pan-y;
     }
     .grid {
       stroke: var(--divider-color, #e0e0e0);
@@ -499,6 +638,72 @@ export class ChmuMeteogramCard extends LitElement {
       stroke-width: 1.5;
       stroke-dasharray: 5 4;
       opacity: 0.75;
+    }
+    .cursorline {
+      stroke: var(--chmu-cursor-color, #5b6f9d);
+      stroke-width: 1.5;
+      stroke-dasharray: 6 4;
+    }
+    .cursordot {
+      fill: var(--card-background-color, #fff);
+      stroke: var(--chmu-temp-color, #d32f2f);
+      stroke-width: 2;
+    }
+    .bubble {
+      position: absolute;
+      top: 6px;
+      width: ${BUBBLE_W}px;
+      box-sizing: border-box;
+      background: var(--card-background-color, #fff);
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+      padding: 10px 12px;
+      pointer-events: none;
+      font-family: var(--mdc-typography-font-family, Roboto, sans-serif);
+      color: var(--primary-text-color, #212121);
+    }
+    .b-when {
+      font-size: 12px;
+      color: var(--secondary-text-color, #727272);
+      margin-bottom: 4px;
+    }
+    .b-main {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    .b-cond {
+      --mdc-icon-size: 34px;
+      color: var(--chmu-header-color, #2167ae);
+    }
+    .b-temp {
+      font-size: 24px;
+      font-weight: 700;
+    }
+    .b-temp-unit {
+      font-size: 13px;
+      font-weight: 600;
+      vertical-align: super;
+    }
+    .b-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 8px;
+      font-size: 12px;
+    }
+    .b-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      white-space: nowrap;
+    }
+    .b-item ha-icon {
+      --mdc-icon-size: 15px;
+      color: var(--chmu-header-color, #2167ae);
+    }
+    .b-wind {
+      transition: transform 0.2s;
     }
     .lbl {
       font: 11px var(--mdc-typography-font-family, Roboto, sans-serif);
@@ -542,15 +747,13 @@ const EDITOR_SCHEMA: SchemaItem[] = [
   },
   { name: "title", selector: { text: {} } },
   { name: "show_header", selector: { boolean: {} } },
-  { name: "scrollbar", selector: { boolean: {} } },
 ];
 
 const EDITOR_LABELS: Record<string, string> = {
   entity: "Weather entita (ČHMÚ)",
-  hours: "Viditelný rozsah (hodin)",
+  hours: "Časový rozsah (hodin)",
   title: "Nadpis",
   show_header: "Zobrazit modrou hlavičku",
-  scrollbar: "Posuvník časové osy",
 };
 
 @customElement("chmu-meteogram-card-editor")
@@ -568,7 +771,6 @@ export class ChmuMeteogramCardEditor extends LitElement {
     const data = {
       hours: DEFAULT_HOURS,
       show_header: true,
-      scrollbar: true,
       ...this._config,
     };
     return html`
