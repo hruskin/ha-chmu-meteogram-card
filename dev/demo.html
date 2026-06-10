@@ -70,7 +70,7 @@ for (let i = 0; i < 73; i++) {
 }
 
 const hass = {
-  locale: { language: "cs" },
+  locale: { language: "cs", time_format: "language" },
   states: {
     "weather.chmu_praha_predpoved": {
       attributes: {
@@ -102,6 +102,19 @@ for (const [id, cfg] of [
   });
   card.hass = hass;
 }
+
+// Pro screenshot: simulované najetí myší na první kartu (bublina je vidět)
+setTimeout(() => {
+  const svg = document.getElementById("card48").shadowRoot.querySelector("svg");
+  if (!svg) return;
+  const r = svg.getBoundingClientRect();
+  svg.dispatchEvent(new PointerEvent("pointermove", {
+    pointerType: "mouse",
+    clientX: r.left + r.width * 0.3,
+    clientY: r.top + 100,
+    bubbles: true,
+  }));
+}, 300);
 </script>
 </body>
 </html>
